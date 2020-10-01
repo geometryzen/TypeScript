@@ -357,6 +357,8 @@ namespace ts {
         const keyofStringsOnly = !!compilerOptions.keyofStringsOnly;
         const freshObjectLiteralFlag = compilerOptions.suppressExcessPropertyErrors ? 0 : ObjectFlags.FreshLiteral;
 
+        const operatorOverloading = compilerOptions.operatorOverloading? OperatorOverloadingKind.DunderMethods : void 0;
+
         const emitResolver = createResolver();
         const nodeBuilder = createNodeBuilder();
 
@@ -29489,19 +29491,33 @@ namespace ts {
                     if (maybeTypeOfKind(operandType, TypeFlags.ESSymbolLike)) {
                         error(node.operand, Diagnostics.The_0_operator_cannot_be_applied_to_type_symbol, tokenToString(node.operator));
                     }
-                    if (node.operator === SyntaxKind.PlusToken) {
-                        if (maybeTypeOfKind(operandType, TypeFlags.BigIntLike)) {
-                            error(node.operand, Diagnostics.Operator_0_cannot_be_applied_to_type_1, tokenToString(node.operator), typeToString(getBaseTypeOfLiteralType(operandType)));
+                    switch(operatorOverloading) {
+                        case OperatorOverloadingKind.DunderMethods: {
+                            return operandType;
                         }
-                        return numberType;
+                        default: {
+                            if (node.operator === SyntaxKind.PlusToken) {
+                                if (maybeTypeOfKind(operandType, TypeFlags.BigIntLike)) {
+                                    error(node.operand, Diagnostics.Operator_0_cannot_be_applied_to_type_1, tokenToString(node.operator), typeToString(getBaseTypeOfLiteralType(operandType)));
+                                }
+                                return numberType;
+                            }
+                            return getUnaryResultType(operandType);
+                        }
                     }
-                    return getUnaryResultType(operandType);
                 case SyntaxKind.ExclamationToken:
-                    checkTruthinessExpression(node.operand);
-                    const facts = getTypeFacts(operandType) & (TypeFacts.Truthy | TypeFacts.Falsy);
-                    return facts === TypeFacts.Truthy ? falseType :
-                        facts === TypeFacts.Falsy ? trueType :
-                        booleanType;
+                    switch(operatorOverloading) {
+                        case OperatorOverloadingKind.DunderMethods: {
+                            return operandType;
+                        }
+                        default: {
+                            checkTruthinessExpression(node.operand);
+                            const facts = getTypeFacts(operandType) & (TypeFacts.Truthy | TypeFacts.Falsy);
+                            return facts === TypeFacts.Truthy ? falseType :
+                                facts === TypeFacts.Falsy ? trueType :
+                                booleanType;
+                        }
+                    }
                 case SyntaxKind.PlusPlusToken:
                 case SyntaxKind.MinusMinusToken:
                     const ok = checkArithmeticOperandType(node.operand, checkNonNullType(operandType, node.operand),
@@ -30037,40 +30053,57 @@ namespace ts {
                     }
                     else {
                         // otherwise just check each operand separately and report errors as normal
-                        const leftOk = checkArithmeticOperandType(left, leftType, Diagnostics.The_left_hand_side_of_an_arithmetic_operation_must_be_of_type_any_number_bigint_or_an_enum_type, /*isAwaitValid*/ true);
-                        const rightOk = checkArithmeticOperandType(right, rightType, Diagnostics.The_right_hand_side_of_an_arithmetic_operation_must_be_of_type_any_number_bigint_or_an_enum_type, /*isAwaitValid*/ true);
-                        let resultType: Type;
-                        // If both are any or unknown, allow operation; assume it will resolve to number
-                        if ((isTypeAssignableToKind(leftType, TypeFlags.AnyOrUnknown) && isTypeAssignableToKind(rightType, TypeFlags.AnyOrUnknown)) ||
-                            // Or, if neither could be bigint, implicit coercion results in a number result
-                            !(maybeTypeOfKind(leftType, TypeFlags.BigIntLike) || maybeTypeOfKind(rightType, TypeFlags.BigIntLike))
-                        ) {
-                            resultType = numberType;
-                        }
-                        // At least one is assignable to bigint, so check that both are
-                        else if (bothAreBigIntLike(leftType, rightType)) {
-                            switch (operator) {
-                                case SyntaxKind.GreaterThanGreaterThanGreaterThanToken:
-                                case SyntaxKind.GreaterThanGreaterThanGreaterThanEqualsToken:
-                                    reportOperatorError();
-                                    break;
-                                case SyntaxKind.AsteriskAsteriskToken:
-                                case SyntaxKind.AsteriskAsteriskEqualsToken:
-                                    if (languageVersion < ScriptTarget.ES2016) {
-                                        error(errorNode, Diagnostics.Exponentiation_cannot_be_performed_on_bigint_values_unless_the_target_option_is_set_to_es2016_or_later);
+                        switch(operatorOverloading) {
+                            case OperatorOverloadingKind.DunderMethods: {
+                                if (isTypeAssignableToKind(leftType, TypeFlags.NumberLike)) {
+                                    if (isTypeAssignableToKind(rightType, TypeFlags.NumberLike)) {
+                                        return numberType;
                                     }
+                                    else {
+                                        return rightType;
+                                    }
+                                }
+                                else {
+                                    return leftType;
+                                }
                             }
-                            resultType = bigintType;
+                            default: {
+                                const leftOk = checkArithmeticOperandType(left, leftType, Diagnostics.The_left_hand_side_of_an_arithmetic_operation_must_be_of_type_any_number_bigint_or_an_enum_type, /*isAwaitValid*/ true);
+                                const rightOk = checkArithmeticOperandType(right, rightType, Diagnostics.The_right_hand_side_of_an_arithmetic_operation_must_be_of_type_any_number_bigint_or_an_enum_type, /*isAwaitValid*/ true);
+                                let resultType: Type;
+                                // If both are any or unknown, allow operation; assume it will resolve to number
+                                if ((isTypeAssignableToKind(leftType, TypeFlags.AnyOrUnknown) && isTypeAssignableToKind(rightType, TypeFlags.AnyOrUnknown)) ||
+                                    // Or, if neither could be bigint, implicit coercion results in a number result
+                                    !(maybeTypeOfKind(leftType, TypeFlags.BigIntLike) || maybeTypeOfKind(rightType, TypeFlags.BigIntLike))
+                                ) {
+                                    resultType = numberType;
+                                }
+                                // At least one is assignable to bigint, so check that both are
+                                else if (bothAreBigIntLike(leftType, rightType)) {
+                                    switch (operator) {
+                                        case SyntaxKind.GreaterThanGreaterThanGreaterThanToken:
+                                        case SyntaxKind.GreaterThanGreaterThanGreaterThanEqualsToken:
+                                            reportOperatorError();
+                                            break;
+                                        case SyntaxKind.AsteriskAsteriskToken:
+                                        case SyntaxKind.AsteriskAsteriskEqualsToken:
+                                            if (languageVersion < ScriptTarget.ES2016) {
+                                                error(errorNode, Diagnostics.Exponentiation_cannot_be_performed_on_bigint_values_unless_the_target_option_is_set_to_es2016_or_later);
+                                            }
+                                    }
+                                    resultType = bigintType;
+                                }
+                                // Exactly one of leftType/rightType is assignable to bigint
+                                else {
+                                    reportOperatorError(bothAreBigIntLike);
+                                    resultType = errorType;
+                                }
+                                if (leftOk && rightOk) {
+                                    checkAssignmentOperator(resultType);
+                                }
+                                return resultType;
+                            }
                         }
-                        // Exactly one of leftType/rightType is assignable to bigint
-                        else {
-                            reportOperatorError(bothAreBigIntLike);
-                            resultType = errorType;
-                        }
-                        if (leftOk && rightOk) {
-                            checkAssignmentOperator(resultType);
-                        }
-                        return resultType;
                     }
                 case SyntaxKind.PlusToken:
                 case SyntaxKind.PlusEqualsToken:
@@ -30101,6 +30134,28 @@ namespace ts {
                         // Otherwise, the result is of type Any.
                         // NOTE: unknown type here denotes error type. Old compiler treated this case as any type so do we.
                         resultType = leftType === errorType || rightType === errorType ? errorType : anyType;
+                    }
+                    else {
+                        switch(operatorOverloading) {
+                            case OperatorOverloadingKind.DunderMethods: {
+                                // We've already covered the case of both being numbers.
+                                if (isTypeAssignableToKind(leftType, TypeFlags.NumberLike)) {
+                                    resultType = rightType;
+                                }
+                                else if (isTypeAssignableToKind(rightType, TypeFlags.NumberLike)) {
+                                    resultType = leftType;
+                                }
+                                else {
+                                    if (!isTypeAssignableToKind(leftType, TypeFlags.StringLike) && !isTypeAssignableToKind(rightType, TypeFlags.StringLike)) {
+                                        resultType = rightType; // Pick any one!
+                                    }
+                                }
+                                break;
+                            }
+                            default: {
+                                // Do nothing.
+                            }
+                        }
                     }
 
                     // Symbols are not allowed at all in arithmetic expressions

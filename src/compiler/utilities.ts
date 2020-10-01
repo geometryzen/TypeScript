@@ -5846,6 +5846,17 @@ namespace ts {
         return moduleResolution;
     }
 
+    export function getOperatorOverloadingKind(compilerOptions: CompilerOptions): OperatorOverloadingKind {
+        switch(compilerOptions.operatorOverloading) {
+            case "dunderMethods": {
+                return OperatorOverloadingKind.DunderMethods;
+            }
+            default: {
+                return OperatorOverloadingKind.None;
+            }
+        }
+    }
+
     export function hasJsonModuleEmitEnabled(options: CompilerOptions) {
         switch (getEmitModuleKind(options)) {
             case ModuleKind.CommonJS:

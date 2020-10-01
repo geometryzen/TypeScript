@@ -5667,6 +5667,11 @@ namespace ts {
         NodeJs   = 2
     }
 
+    export enum OperatorOverloadingKind {
+        None = 0,
+        DunderMethods = 1
+    }
+
     export interface PluginImport {
         name: string;
     }
@@ -5776,6 +5781,7 @@ namespace ts {
         noLib?: boolean;
         noResolve?: boolean;
         noUncheckedIndexedAccess?: boolean;
+        operatorOverloading?: "dunderMethods";
         out?: string;
         outDir?: string;
         outFile?: string;
