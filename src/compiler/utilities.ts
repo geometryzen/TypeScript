@@ -616,15 +616,13 @@ namespace ts {
         NeverAsciiEscape = 1 << 0,
         JsxAttributeEscape = 1 << 1,
         TerminateUnterminatedLiterals = 1 << 2,
+        AllowNumericSeparator = 1 << 3
     }
 
     export function getLiteralText(node: LiteralLikeNode, sourceFile: SourceFile, flags: GetLiteralTextFlags) {
         // If we don't need to downlevel and we can reach the original source text using
         // the node's parent reference, then simply get the text as it was originally written.
-        if (!nodeIsSynthesized(node) && node.parent && !(flags & GetLiteralTextFlags.TerminateUnterminatedLiterals && node.isUnterminated) && !(
-            (isNumericLiteral(node) && node.numericLiteralFlags & TokenFlags.ContainsSeparator) ||
-            isBigIntLiteral(node)
-        )) {
+        if (canUseOriginalText(node, flags)) {
             return getSourceTextOfNodeFromSourceFile(sourceFile, node);
         }
 
@@ -675,6 +673,18 @@ namespace ts {
         }
 
         return Debug.fail(`Literal kind '${node.kind}' not accounted for.`);
+    }
+
+    function canUseOriginalText(node: LiteralLikeNode, flags: GetLiteralTextFlags): boolean {
+        if (nodeIsSynthesized(node) || !node.parent || (flags & GetLiteralTextFlags.TerminateUnterminatedLiterals && node.isUnterminated)) {
+            return false;
+        }
+
+        if (isNumericLiteral(node) && node.numericLiteralFlags & TokenFlags.ContainsSeparator) {
+            return !!(flags & GetLiteralTextFlags.AllowNumericSeparator);
+        }
+
+        return !isBigIntLiteral(node);
     }
 
     export function getTextOfConstantValue(value: string | number) {
@@ -978,10 +988,25 @@ namespace ts {
     export function createDiagnosticForNodeFromMessageChain(node: Node, messageChain: DiagnosticMessageChain, relatedInformation?: DiagnosticRelatedInformation[]): DiagnosticWithLocation {
         const sourceFile = getSourceFileOfNode(node);
         const span = getErrorSpanForNode(sourceFile, node);
+        return createFileDiagnosticFromMessageChain(sourceFile, span.start, span.length, messageChain, relatedInformation);
+    }
+
+    function assertDiagnosticLocation(file: SourceFile | undefined, start: number, length: number) {
+        Debug.assertGreaterThanOrEqual(start, 0);
+        Debug.assertGreaterThanOrEqual(length, 0);
+
+        if (file) {
+            Debug.assertLessThanOrEqual(start, file.text.length);
+            Debug.assertLessThanOrEqual(start + length, file.text.length);
+        }
+    }
+
+    export function createFileDiagnosticFromMessageChain(file: SourceFile, start: number, length: number, messageChain: DiagnosticMessageChain, relatedInformation?: DiagnosticRelatedInformation[]): DiagnosticWithLocation {
+        assertDiagnosticLocation(file, start, length);
         return {
-            file: sourceFile,
-            start: span.start,
-            length: span.length,
+            file,
+            start,
+            length,
             code: messageChain.code,
             category: messageChain.category,
             messageText: messageChain.next ? messageChain : messageChain.messageText,
@@ -1484,6 +1509,13 @@ namespace ts {
             }
             return false;
         });
+    }
+
+    export function getPropertyArrayElementValue(objectLiteral: ObjectLiteralExpression, propKey: string, elementValue: string): StringLiteral | undefined {
+        return firstDefined(getPropertyAssignment(objectLiteral, propKey), property =>
+            isArrayLiteralExpression(property.initializer) ?
+                find(property.initializer.elements, (element): element is StringLiteral => isStringLiteral(element) && element.text === elementValue) :
+                undefined);
     }
 
     export function getTsConfigObjectLiteralExpression(tsConfigSourceFile: TsConfigSourceFile | undefined): ObjectLiteralExpression | undefined {
@@ -3657,12 +3689,7 @@ namespace ts {
             lookup,
             getGlobalDiagnostics,
             getDiagnostics,
-            reattachFileDiagnostics
         };
-
-        function reattachFileDiagnostics(newFile: SourceFile): void {
-            forEach(fileDiagnostics.get(newFile.fileName), diagnostic => diagnostic.file = newFile);
-        }
 
         function lookup(diagnostic: Diagnostic): Diagnostic | undefined {
             let diagnostics: SortedArray<Diagnostic> | undefined;
@@ -5683,9 +5710,7 @@ namespace ts {
 
     export function createDetachedDiagnostic(fileName: string, start: number, length: number, message: DiagnosticMessage, ...args: (string | number | undefined)[]): DiagnosticWithDetachedLocation;
     export function createDetachedDiagnostic(fileName: string, start: number, length: number, message: DiagnosticMessage): DiagnosticWithDetachedLocation {
-        Debug.assertGreaterThanOrEqual(start, 0);
-        Debug.assertGreaterThanOrEqual(length, 0);
-
+        assertDiagnosticLocation(/*file*/ undefined, start, length);
         let text = getLocaleSpecificMessage(message);
 
         if (arguments.length > 4) {
@@ -5753,13 +5778,7 @@ namespace ts {
 
     export function createFileDiagnostic(file: SourceFile, start: number, length: number, message: DiagnosticMessage, ...args: (string | number | undefined)[]): DiagnosticWithLocation;
     export function createFileDiagnostic(file: SourceFile, start: number, length: number, message: DiagnosticMessage): DiagnosticWithLocation {
-        Debug.assertGreaterThanOrEqual(start, 0);
-        Debug.assertGreaterThanOrEqual(length, 0);
-
-        if (file) {
-            Debug.assertLessThanOrEqual(start, file.text.length);
-            Debug.assertLessThanOrEqual(start + length, file.text.length);
-        }
+        assertDiagnosticLocation(file, start, length);
 
         let text = getLocaleSpecificMessage(message);
 
@@ -5812,7 +5831,7 @@ namespace ts {
         };
     }
 
-    export function createCompilerDiagnosticFromMessageChain(chain: DiagnosticMessageChain): Diagnostic {
+    export function createCompilerDiagnosticFromMessageChain(chain: DiagnosticMessageChain, relatedInformation?: DiagnosticRelatedInformation[]): Diagnostic {
         return {
             file: undefined,
             start: undefined,
@@ -5821,6 +5840,7 @@ namespace ts {
             code: chain.code,
             category: chain.category,
             messageText: chain.next ? chain : chain.messageText,
+            relatedInformation
         };
     }
 
@@ -6221,6 +6241,11 @@ namespace ts {
      */
     export function isImplicitGlob(lastPathComponent: string): boolean {
         return !/[.*?]/.test(lastPathComponent);
+    }
+
+    export function getPatternFromSpec(spec: string, basePath: string, usage: "files" | "directories" | "exclude") {
+        const pattern = spec && getSubPatternFromSpec(spec, basePath, usage, wildcardMatchers[usage]);
+        return pattern && `^(${pattern})${usage === "exclude" ? "($|/)" : "$"}`;
     }
 
     function getSubPatternFromSpec(spec: string, basePath: string, usage: "files" | "directories" | "exclude", { singleAsteriskRegexFragment, doubleAsteriskRegexFragment, replaceWildcardCharacter }: WildcardMatcher): string | undefined {
