@@ -96,7 +96,15 @@ namespace ts {
     }
 
     export function optionsHaveModuleResolutionChanges(oldOptions: CompilerOptions, newOptions: CompilerOptions) {
-        return moduleResolutionOptionDeclarations.some(o =>
+        return optionsHaveChanges(oldOptions, newOptions, moduleResolutionOptionDeclarations);
+    }
+
+    export function changesAffectingProgramStructure(oldOptions: CompilerOptions, newOptions: CompilerOptions) {
+        return optionsHaveChanges(oldOptions, newOptions, optionsAffectingProgramStructure);
+    }
+
+    export function optionsHaveChanges(oldOptions: CompilerOptions, newOptions: CompilerOptions, optionDeclarations: readonly CommandLineOption[]) {
+        return oldOptions !== newOptions && optionDeclarations.some(o =>
             !isJsonEqual(getCompilerOptionValue(oldOptions, o), getCompilerOptionValue(newOptions, o)));
     }
 
@@ -6136,13 +6144,11 @@ namespace ts {
     }
 
     export function compilerOptionsAffectSemanticDiagnostics(newOptions: CompilerOptions, oldOptions: CompilerOptions): boolean {
-        return oldOptions !== newOptions &&
-            semanticDiagnosticsOptionDeclarations.some(option => !isJsonEqual(getCompilerOptionValue(oldOptions, option), getCompilerOptionValue(newOptions, option)));
+        return optionsHaveChanges(oldOptions, newOptions, semanticDiagnosticsOptionDeclarations);
     }
 
     export function compilerOptionsAffectEmit(newOptions: CompilerOptions, oldOptions: CompilerOptions): boolean {
-        return oldOptions !== newOptions &&
-            affectsEmitOptionDeclarations.some(option => !isJsonEqual(getCompilerOptionValue(oldOptions, option), getCompilerOptionValue(newOptions, option)));
+        return optionsHaveChanges(oldOptions, newOptions, affectsEmitOptionDeclarations);
     }
 
     export function getCompilerOptionValue(options: CompilerOptions, option: CommandLineOption): unknown {
@@ -6780,14 +6786,25 @@ namespace ts {
         return changeAnyExtension(path, newExtension, extensionsToRemove, /*ignoreCase*/ false) as T;
     }
 
-    export function tryParsePattern(pattern: string): Pattern | undefined {
-        // This should be verified outside of here and a proper error thrown.
-        Debug.assert(hasZeroOrOneAsteriskCharacter(pattern));
+    /**
+     * Returns the input if there are no stars, a pattern if there is exactly one,
+     * and undefined if there are more.
+     */
+    export function tryParsePattern(pattern: string): string | Pattern | undefined {
         const indexOfStar = pattern.indexOf("*");
-        return indexOfStar === -1 ? undefined : {
-            prefix: pattern.substr(0, indexOfStar),
-            suffix: pattern.substr(indexOfStar + 1)
-        };
+        if (indexOfStar === -1) {
+            return pattern;
+        }
+        return pattern.indexOf("*", indexOfStar + 1) !== -1
+            ? undefined
+            : {
+                prefix: pattern.substr(0, indexOfStar),
+                suffix: pattern.substr(indexOfStar + 1)
+            };
+    }
+
+    export function tryParsePatterns(paths: MapLike<string[]>): (string | Pattern)[] {
+        return mapDefined(getOwnKeys(paths), path => tryParsePattern(path));
     }
 
     export function positionIsSynthesized(pos: number): boolean {
@@ -6833,21 +6850,19 @@ namespace ts {
 
 
     /**
-     * patternStrings contains both pattern strings (containing "*") and regular strings.
+     * patternOrStrings contains both patterns (containing "*") and regular strings.
      * Return an exact match if possible, or a pattern match, or undefined.
      * (These are verified by verifyCompilerOptions to have 0 or 1 "*" characters.)
      */
-    export function matchPatternOrExact(patternStrings: readonly string[], candidate: string): string | Pattern | undefined {
+    export function matchPatternOrExact(patternOrStrings: readonly (string | Pattern)[], candidate: string): string | Pattern | undefined {
         const patterns: Pattern[] = [];
-        for (const patternString of patternStrings) {
-            if (!hasZeroOrOneAsteriskCharacter(patternString)) continue;
-            const pattern = tryParsePattern(patternString);
-            if (pattern) {
-                patterns.push(pattern);
+        for (const patternOrString of patternOrStrings) {
+            if (patternOrString === candidate) {
+                return candidate;
             }
-            else if (patternString === candidate) {
-                // pattern was matched as is - no need to search further
-                return patternString;
+
+            if (!isString(patternOrString)) {
+                patterns.push(patternOrString);
             }
         }
 
